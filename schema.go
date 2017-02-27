@@ -25,7 +25,10 @@ func GenerateSchemaDefinitions(path, tag string) ([]byte, error) {
 	}
 	pack := prog.Package(path)
 	if pack == nil {
-		return nil, errors.New("Package not loaded")
+		return nil, errors.New("Package was not loaded.")
+	}
+	if pack.Types == nil {
+		return nil, errors.New("Missing type information.")
 	}
 
 	var src bytes.Buffer
@@ -38,7 +41,7 @@ func GenerateSchemaDefinitions(path, tag string) ([]byte, error) {
 				lastIdent = n
 			case *ast.StructType:
 				var def []byte
-				def, err = generateStructDefinition(tag, &pack.Types, lastIdent, n)
+				def, err = generateStructDefinition(tag, pack, lastIdent, n)
 				src.Write(def)
 			}
 			return true
@@ -48,6 +51,47 @@ func GenerateSchemaDefinitions(path, tag string) ([]byte, error) {
 		}
 	}
 	return format.Source(src.Bytes())
+}
+
+func generateStructDefinition(tagName string,
+	info *loader.PackageInfo,
+	ident *ast.Ident,
+	node *ast.StructType,
+) ([]byte, error) {
+	var src bytes.Buffer
+	fields := []graphQLFieldDefinition{}
+	for _, field := range node.Fields.List {
+		if field.Tag == nil {
+			continue
+		}
+		tag := reflect.StructTag(strings.Trim(field.Tag.Value, "`"))
+		name := tag.Get(tagName)
+		if name == "" || name == "-" {
+			continue
+		}
+		typ, ok := info.Types[field.Type]
+		if !ok {
+			continue
+		}
+		fields = append(fields, graphQLFieldDefinition{
+			Name:        field.Names[0].Name,
+			Type:        typ.Type,
+			GraphQLName: name,
+		})
+	}
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	packageName := info.Pkg.Name()
+	err := generateGraphQLObjectDefinition(&src, graphQLObjectDefinition{
+		Name:    ident.Name,
+		Package: packageName,
+		Fields:  fields,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return src.Bytes(), nil
 }
 
 const graphQLObjectTemplate = `
@@ -116,44 +160,4 @@ func generateGraphQLObjectDefinition(buf *bytes.Buffer,
 		return err
 	}
 	return templ.Execute(buf, def)
-}
-
-func generateStructDefinition(tagName string,
-	types *map[ast.Expr]types.TypeAndValue,
-	ident *ast.Ident,
-	node *ast.StructType,
-) ([]byte, error) {
-	var src bytes.Buffer
-	fields := []graphQLFieldDefinition{}
-	for _, field := range node.Fields.List {
-		if field.Tag == nil {
-			continue
-		}
-		tag := reflect.StructTag(strings.Trim(field.Tag.Value, "`"))
-		name := tag.Get(tagName)
-		if name == "" || name == "-" {
-			continue
-		}
-		typ, ok := (*types)[field.Type]
-		if !ok {
-			continue
-		}
-		fields = append(fields, graphQLFieldDefinition{
-			Name:        field.Names[0].Name,
-			Type:        typ.Type,
-			GraphQLName: name,
-		})
-	}
-	if len(fields) == 0 {
-		return nil, nil
-	}
-	err := generateGraphQLObjectDefinition(&src, graphQLObjectDefinition{
-		Name:    ident.Name,
-		Package: "model",
-		Fields:  fields,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return src.Bytes(), nil
 }
